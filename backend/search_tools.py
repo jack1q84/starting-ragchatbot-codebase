@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, Protocol
+from typing import Dict, Any, Optional, List, Protocol
 from abc import ABC, abstractmethod
 from vector_store import VectorStore, SearchResults
 import json
@@ -31,7 +31,7 @@ class CourseSearchTool(Tool):
             "type": "function",
             "function": {
                 "name": "search_course_content",
-                "description": "Search course materials with smart course name matching and lesson filtering",
+                "description": "Search within lesson content for specific topics, concepts, or technical details. NOT for course outlines, syllabi, or lesson listings — use get_course_outline for that.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -127,6 +127,71 @@ class CourseSearchTool(Tool):
         self.last_sources = sources
         
         return "\n\n".join(formatted)
+
+
+class CourseOutlineTool(Tool):
+    """Tool for retrieving course outline (title, link, and complete lesson list)"""
+    
+    def __init__(self, vector_store: VectorStore):
+        self.store = vector_store
+    
+    def get_tool_definition(self) -> Dict[str, Any]:
+        """Return OpenAI-compatible tool definition for this tool"""
+        return {
+            "type": "function",
+            "function": {
+                "name": "get_course_outline",
+                "description": "Get the full outline of a course including course title, course link, and complete lesson list with lesson numbers and titles. Use this for questions about course structure, syllabus, or what a course covers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "course_title": {
+                            "type": "string",
+                            "description": "The full or partial course title to look up (e.g. 'MCP: Build Rich-Context AI Apps with Anthropic')"
+                        }
+                    },
+                    "required": ["course_title"]
+                }
+            }
+        }
+    
+    def execute(self, course_title: str) -> str:
+        """
+        Execute the course outline tool.
+        
+        Args:
+            course_title: The course title to look up
+            
+        Returns:
+            Formatted course outline or error message
+        """
+        # First resolve the course name via semantic search
+        resolved_title = self.store._resolve_course_name(course_title)
+        if not resolved_title:
+            return f"No course found matching '{course_title}'."
+        
+        # Get the full outline
+        outline = self.store.get_course_outline(resolved_title)
+        if not outline:
+            return f"Could not retrieve outline for '{resolved_title}'."
+        
+        # Format the outline
+        lines = []
+        lines.append(f"Course Title: {outline['title']}")
+        if outline.get('course_link'):
+            lines.append(f"Course Link: {outline['course_link']}")
+        if outline.get('instructor'):
+            lines.append(f"Instructor: {outline['instructor']}")
+        lines.append("")
+        lines.append("Lessons:")
+        for lesson in outline['lessons']:
+            lesson_line = f"  Lesson {lesson['lesson_number']}: {lesson['lesson_title']}"
+            if lesson.get('lesson_link'):
+                lesson_line += f" ({lesson['lesson_link']})"
+            lines.append(lesson_line)
+        
+        return "\n".join(lines)
+
 
 class ToolManager:
     """Manages available tools for the AI"""

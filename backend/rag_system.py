@@ -4,7 +4,7 @@ from document_processor import DocumentProcessor
 from vector_store import VectorStore
 from ai_generator import AIGenerator
 from session_manager import SessionManager
-from search_tools import ToolManager, CourseSearchTool
+from search_tools import ToolManager, CourseSearchTool, CourseOutlineTool
 from models import Course, Lesson, CourseChunk
 
 class RAGSystem:
@@ -23,6 +23,8 @@ class RAGSystem:
         self.tool_manager = ToolManager()
         self.search_tool = CourseSearchTool(self.vector_store)
         self.tool_manager.register_tool(self.search_tool)
+        self.outline_tool = CourseOutlineTool(self.vector_store)
+        self.tool_manager.register_tool(self.outline_tool)
     
     def add_course_document(self, file_path: str) -> Tuple[Course, int]:
         """
@@ -110,8 +112,85 @@ class RAGSystem:
         Returns:
             Tuple of (response, sources list - empty for tool-based approach)
         """
-        # Create prompt for the AI with clear instructions
-        prompt = f"""Answer this question about course materials: {query}"""
+        # Auto-detect outline queries and pre-fetch course outline data
+        outline_keywords = ['outline', 'syllabus', 'lesson list', 'list all lesson',
+                           'what does.*cover', 'structure of', 'lessons in',
+                           'course overview', 'topics covered', 'curriculum']
+        outline_context = ""
+        import re
+        STOP_WORDS = {'the', 'a', 'an', 'of', 'in', 'to', 'for', 'with', 'on', 'at',
+                      'is', 'are', 'was', 'were', 'be', 'been', 'being', 'do', 'does',
+                      'did', 'will', 'would', 'can', 'could', 'may', 'might', 'shall',
+                      'should', 'has', 'have', 'had', 'not', 'no', 'nor', 'this', 'that',
+                      'these', 'those', 'it', 'its', 'what', 'which', 'who', 'whom',
+                      'and', 'but', 'or', 'as', 'by', 'from', 'about', 'all', 'each',
+                      'every', 'some', 'any', 'both', 'more', 'most', 'other', 'than',
+                      'so', 'if', 'into', 'over', 'very', 'just', 'also', 'how'}
+        for keyword in outline_keywords:
+            if re.search(keyword, query, re.IGNORECASE):
+                # Try to extract course name from query
+                course_titles = self.vector_store.get_existing_course_titles()
+                matched_course = None
+                
+                # Strategy 1: Check if any course title appears as substring in query
+                query_lower = query.lower()
+                for title in course_titles:
+                    if title.lower() in query_lower:
+                        matched_course = title
+                        break
+                
+                # Strategy 2: Check for significant word overlap (excluding stop words)
+                if not matched_course:
+                    query_significant = {w for w in query_lower.split() if w not in STOP_WORDS and len(w) > 2}
+                    best_match = None
+                    best_count = 0
+                    for title in course_titles:
+                        title_words = {w for w in title.lower().split() if w not in STOP_WORDS and len(w) > 2}
+                        overlap = query_significant & title_words
+                        if len(overlap) > best_count:
+                            best_count = len(overlap)
+                            best_match = title
+                    if best_count > 0:
+                        matched_course = best_match
+                
+                # Strategy 3: Fallback by checking for specific terms (MCP, Chroma, etc.)
+                if not matched_course:
+                    specific_terms = ['mcp', 'chroma', 'computer use', 'prompt compression',
+                                     'rag', 'retrieval', 'anthropic', 'deeplearning']
+                    for term in specific_terms:
+                        if term in query_lower:
+                            for t in course_titles:
+                                if term in t.lower():
+                                    matched_course = t
+                                    break
+                            if matched_course:
+                                break
+                
+                if matched_course:
+                    outline = self.vector_store.get_course_outline(matched_course)
+                    if outline:
+                        lines = [f"Course Title: {outline['title']}"]
+                        if outline.get('course_link'):
+                            lines.append(f"Course Link: {outline['course_link']}")
+                        if outline.get('instructor'):
+                            lines.append(f"Instructor: {outline['instructor']}")
+                        lines.append("Lessons:")
+                        for lesson in outline['lessons']:
+                            lines.append(f"  Lesson {lesson['lesson_number']}: {lesson['lesson_title']}")
+                        outline_context = "\n".join(lines)
+                break  # Process only first matched keyword
+        
+        # Create prompt for the AI
+        if outline_context:
+            prompt = f"""Answer this question about course materials using the provided course outline data.
+DO NOT search for this information - it is already provided below.
+
+Question: {query}
+
+Course Outline Data:
+{outline_context}"""
+        else:
+            prompt = f"""Answer this question about course materials: {query}"""
         
         # Get conversation history if session exists
         history = None
