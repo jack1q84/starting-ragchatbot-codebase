@@ -1,8 +1,9 @@
-import anthropic
+import json
+from openai import OpenAI
 from typing import List, Optional, Dict, Any
 
 class AIGenerator:
-    """Handles interactions with Anthropic's Claude API for generating responses"""
+    """Handles interactions with LLM API (OpenAI-compatible, e.g. DeepSeek) for generating responses"""
     
     # Static system prompt to avoid rebuilding on each call
     SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to a comprehensive search tool for course information.
@@ -29,8 +30,8 @@ All responses must be:
 Provide only the direct answer to what was asked.
 """
     
-    def __init__(self, api_key: str, model: str):
-        self.client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, api_key: str, base_url: str, model: str):
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         
         # Pre-build base API parameters
@@ -50,49 +51,54 @@ Provide only the direct answer to what was asked.
         Args:
             query: The user's question or request
             conversation_history: Previous messages for context
-            tools: Available tools the AI can use
+            tools: Available tools the AI can use (OpenAI format)
             tool_manager: Manager to execute tools
             
         Returns:
             Generated response as string
         """
+        # Build messages list
+        messages = []
         
-        # Build system content efficiently - avoid string ops when possible
+        # System prompt as first message
         system_content = (
             f"{self.SYSTEM_PROMPT}\n\nPrevious conversation:\n{conversation_history}"
             if conversation_history 
             else self.SYSTEM_PROMPT
         )
+        messages.append({"role": "system", "content": system_content})
         
-        # Prepare API call parameters efficiently
+        # User query
+        messages.append({"role": "user", "content": query})
+        
+        # Prepare API call parameters
         api_params = {
             **self.base_params,
-            "messages": [{"role": "user", "content": query}],
-            "system": system_content
+            "messages": messages
         }
         
         # Add tools if available
         if tools:
             api_params["tools"] = tools
-            api_params["tool_choice"] = {"type": "auto"}
+            api_params["tool_choice"] = "auto"
         
-        # Get response from Claude
-        response = self.client.messages.create(**api_params)
+        # Get response from LLM
+        response = self.client.chat.completions.create(**api_params)
         
         # Handle tool execution if needed
-        if response.stop_reason == "tool_use" and tool_manager:
+        if response.choices[0].finish_reason == "tool_calls" and tool_manager:
             return self._handle_tool_execution(response, api_params, tool_manager)
         
         # Return direct response
-        return response.content[0].text
+        return response.choices[0].message.content
     
     def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
         """
         Handle execution of tool calls and get follow-up response.
         
         Args:
-            initial_response: The response containing tool use requests
-            base_params: Base API parameters
+            initial_response: The response containing tool call requests
+            base_params: Base API parameters (with messages)
             tool_manager: Manager to execute tools
             
         Returns:
@@ -101,35 +107,33 @@ Provide only the direct answer to what was asked.
         # Start with existing messages
         messages = base_params["messages"].copy()
         
-        # Add AI's tool use response
-        messages.append({"role": "assistant", "content": initial_response.content})
+        # Get the assistant message with tool calls
+        assistant_message = initial_response.choices[0].message
+        
+        # Add assistant's tool call response
+        messages.append(assistant_message)
         
         # Execute all tool calls and collect results
-        tool_results = []
-        for content_block in initial_response.content:
-            if content_block.type == "tool_use":
-                tool_result = tool_manager.execute_tool(
-                    content_block.name, 
-                    **content_block.input
-                )
-                
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": content_block.id,
-                    "content": tool_result
-                })
-        
-        # Add tool results as single message
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
+        tool_call_id = None
+        for tool_call in assistant_message.tool_calls:
+            tool_call_id = tool_call.id
+            tool_result = tool_manager.execute_tool(
+                tool_call.function.name,
+                **json.loads(tool_call.function.arguments)
+            )
+            
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": tool_result
+            })
         
         # Prepare final API call without tools
         final_params = {
             **self.base_params,
-            "messages": messages,
-            "system": base_params["system"]
+            "messages": messages
         }
         
         # Get final response
-        final_response = self.client.messages.create(**final_params)
-        return final_response.content[0].text
+        final_response = self.client.chat.completions.create(**final_params)
+        return final_response.choices[0].message.content
