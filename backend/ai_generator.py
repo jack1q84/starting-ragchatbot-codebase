@@ -16,7 +16,9 @@ Available Tools:
 Tool Usage Guidelines:
 - **For outline/syllabus/structure questions**: You MUST call `get_course_outline` with the course title. Do NOT use `search_course_content` for this.
 - **For specific lesson content questions**: Call `search_course_content` with relevant search terms and optional filters.
-- **One tool call per query maximum** — do not call both tools.
+- **Multi-step reasoning**: When a question requires multiple pieces of information (e.g., first find a course outline, then search for related content), you may call tools sequentially across multiple rounds. Each round builds on the previous results.
+- **Plan before calling**: If you need information from one tool to formulate parameters for another, call them one at a time across rounds.
+- **Maximum tool rounds**: You have up to 2 rounds of tool calls to gather the information you need.
 - Synthesize tool results into accurate, fact-based responses.
 - If a tool yields no results, state this clearly without offering alternatives.
 - CRITICAL: When asked about a course outline, syllabus, or lesson list, ALWAYS use get_course_outline — it returns the complete lesson list from metadata.
@@ -36,9 +38,10 @@ All responses must be:
 Provide only the direct answer to what was asked.
 """
     
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(self, api_key: str, base_url: str, model: str, max_tool_rounds: int = 2):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
+        self.max_tool_rounds = max_tool_rounds
         
         # Pre-build base API parameters
         self.base_params = {
@@ -52,7 +55,10 @@ Provide only the direct answer to what was asked.
                          tools: Optional[List] = None,
                          tool_manager=None) -> str:
         """
-        Generate AI response with optional tool usage and conversation context.
+        Generate AI response with optional sequential tool usage and conversation context.
+        
+        Supports up to `max_tool_rounds` rounds of sequential tool calling,
+        allowing Claude to reason across multiple tool results for complex queries.
         
         Args:
             query: The user's question or request
@@ -91,55 +97,77 @@ Provide only the direct answer to what was asked.
         # Get response from LLM
         response = self.client.chat.completions.create(**api_params)
         
-        # Handle tool execution if needed
+        # Enter sequential tool loop if needed
         if response.choices[0].finish_reason == "tool_calls" and tool_manager:
-            return self._handle_tool_execution(response, api_params, tool_manager)
+            return self._sequential_tool_loop(response, messages, tools, tool_manager)
         
         # Return direct response
         return response.choices[0].message.content
     
-    def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
+    def _sequential_tool_loop(self, initial_response, messages: List[Dict[str, Any]], 
+                               tools: Optional[List], tool_manager) -> str:
         """
-        Handle execution of tool calls and get follow-up response.
+        Execute sequential tool calls across up to max_tool_rounds rounds.
+        
+        Each round:
+        1. Appends the assistant message (with tool_calls) to the conversation
+        2. Executes all tool calls and appends results
+        3. Calls the LLM with tools retained (except on the final round)
         
         Args:
-            initial_response: The response containing tool call requests
-            base_params: Base API parameters (with messages)
+            initial_response: The response containing the first tool call request
+            messages: Current message list (system + user)
+            tools: Available tool definitions (included in non-final rounds)
             tool_manager: Manager to execute tools
             
         Returns:
-            Final response text after tool execution
+            Final response text after all tool rounds
         """
-        # Start with existing messages
-        messages = base_params["messages"].copy()
+        current_response = initial_response
+        current_messages = messages.copy()
         
-        # Get the assistant message with tool calls
-        assistant_message = initial_response.choices[0].message
-        
-        # Add assistant's tool call response
-        messages.append(assistant_message)
-        
-        # Execute all tool calls and collect results
-        tool_call_id = None
-        for tool_call in assistant_message.tool_calls:
-            tool_call_id = tool_call.id
-            tool_result = tool_manager.execute_tool(
-                tool_call.function.name,
-                **json.loads(tool_call.function.arguments)
-            )
+        for round_num in range(self.max_tool_rounds):
+            assistant_msg = current_response.choices[0].message
             
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": tool_result
-            })
+            # Termination condition (b): Claude chose not to call tools
+            if current_response.choices[0].finish_reason != "tool_calls":
+                return assistant_msg.content
+            
+            # Append assistant message (use model_dump for safe serialization)
+            current_messages.append(assistant_msg.model_dump())
+            
+            # Execute all tool calls from this round
+            for tool_call in assistant_msg.tool_calls:
+                try:
+                    tool_result = tool_manager.execute_tool(
+                        tool_call.function.name,
+                        **json.loads(tool_call.function.arguments)
+                    )
+                except Exception as e:
+                    # Termination condition (c): graceful error handling
+                    tool_result = f"Tool execution error: {str(e)}"
+                
+                current_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result
+                })
+            
+            # Build next round API parameters
+            round_params = {
+                **self.base_params,
+                "messages": current_messages
+            }
+            
+            # Non-final rounds keep tools; final round removes them
+            is_last_round = (round_num == self.max_tool_rounds - 1)
+            if not is_last_round:
+                round_params["tools"] = tools
+                round_params["tool_choice"] = "auto"
+            # Final round: no tools → LLM must produce a direct answer
+            
+            # Get next response from LLM
+            current_response = self.client.chat.completions.create(**round_params)
         
-        # Prepare final API call without tools
-        final_params = {
-            **self.base_params,
-            "messages": messages
-        }
-        
-        # Get final response
-        final_response = self.client.chat.completions.create(**final_params)
-        return final_response.choices[0].message.content
+        # Termination condition (a): max rounds reached
+        return current_response.choices[0].message.content or "I have completed my analysis."

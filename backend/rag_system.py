@@ -205,8 +205,8 @@ Course Outline Data:
             tool_manager=self.tool_manager
         )
         
-        # Get sources from the search tool
-        sources = self.tool_manager.get_last_sources()
+        # Get all accumulated sources from multi-round tool calls
+        sources = self.tool_manager.get_all_sources()
 
         # Reset sources after retrieving them
         self.tool_manager.reset_sources()
