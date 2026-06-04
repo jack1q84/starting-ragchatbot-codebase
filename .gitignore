@@ -29,3 +29,10 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test artifacts
+backend/test_chroma_db/
+.playwright-mcp/
+
+# Garbage files
+$null
