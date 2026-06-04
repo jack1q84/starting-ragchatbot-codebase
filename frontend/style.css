@@ -613,7 +613,7 @@ header h1 {
 
 .stats-header::before,
 .suggested-header::before {
-    content: '▶';
+    content: '\25B6';
     display: inline-block;
     margin-right: 0.5rem;
     transition: transform 0.2s ease;
@@ -694,7 +694,7 @@ details[open] .suggested-header::before {
 }
 
 .course-titles-header::before {
-    content: '▶';
+    content: '\25B6';
     display: inline-block;
     margin-right: 0.5rem;
     transition: transform 0.2s ease;

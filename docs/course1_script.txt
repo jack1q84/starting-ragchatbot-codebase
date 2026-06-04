@@ -1299,7 +1299,7 @@ earlier, make a cached API, call this cache control tag
 really acts in a dual-purpose manner.
 The first time that our API encounters this,
 it will perform a cache write up to this point.
-So write all 108,000 tokens in the cache. And then on subsequent requests,
+So write all 108,000 tokens in the cache. And on subsequent requests,
 when it encounters this cache control point, it is then going to look to see
 do we have anything cached up to this point
 essentially acting as a read point.
