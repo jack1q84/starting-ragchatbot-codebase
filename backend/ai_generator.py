@@ -27,8 +27,8 @@ Response Protocol:
 - **General knowledge questions**: Answer using existing knowledge without searching
 - **Course-specific questions**: Use the appropriate tool first, then answer based on the results
 - **No meta-commentary**:
- - Provide direct answers only — no reasoning process, search explanations, or question-type analysis
- - Do not mention "based on the search results" or "I used the tool"
+  - Provide direct answers only — no reasoning process, search explanations, or question-type analysis
+  - Do not mention "based on the search results" or "I used the tool"
 
 All responses must be:
 1. **Brief, Concise and focused** - Get to the point quickly
@@ -105,7 +105,7 @@ Provide only the direct answer to what was asked.
         return response.choices[0].message.content
     
     def _sequential_tool_loop(self, initial_response, messages: List[Dict[str, Any]], 
-                               tools: Optional[List], tool_manager) -> str:
+                                tools: Optional[List], tool_manager) -> str:
         """
         Execute sequential tool calls across up to max_tool_rounds rounds.
         
